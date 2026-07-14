@@ -1,50 +1,81 @@
-# temp-app
+# E-Mountainous 🏔️
 
-This template should help get you started developing with Vue 3 in Vite.
+**E-Mountainous** adalah platform web booking tiket pendakian gunung yang dirancang untuk membantu pengelola basecamp dalam mendigitalisasi proses reservasi, mengelola kuota pendaki secara real-time, dan memberikan informasi keselamatan (seperti estimasi cuaca) kepada pendaki.
 
-## Recommended IDE Setup
+## ✨ Fitur Utama
 
-[VS Code](https://code.visualstudio.com/) + [Vue (Official)](https://marketplace.visualstudio.com/items?itemName=Vue.volar) (and disable Vetur).
+### 🧗 Untuk Pendaki (User)
+- **Cek Kuota Real-time**: Memastikan ketersediaan kuota sebelum berangkat ke basecamp.
+- **Booking Tiket Online**: Reservasi jadwal pendakian dengan mudah dan aman.
+- **Informasi Cuaca & Status Jalur**: Mengetahui kondisi cuaca dan keamanan jalur (buka/tutup) sebelum pendakian.
+- **E-Tiket QR Code**: Bukti booking digital yang praktis dan bisa discan saat check-in di basecamp.
 
-## Recommended Browser Setup
+### 🛡️ Untuk Pengelola (Admin Basecamp)
+- **Manajemen Kuota**: Mengatur batas jumlah pendaki harian untuk mencegah over-kapasitas dan menjaga kelestarian alam.
+- **Validasi Cepat**: Scan QR Code e-tiket pendaki saat kedatangan untuk proses check-in yang efisien.
+- **Update Status Jalur**: Menutup jalur secara instan jika cuaca buruk atau terjadi keadaan darurat.
+- **Dashboard Laporan**: Memantau statistik jumlah pendaki, pendapatan, dan riwayat transaksi.
 
-- Chromium-based browsers (Chrome, Edge, Brave, etc.):
-  - [Vue.js devtools](https://chromewebstore.google.com/detail/vuejs-devtools/nhdogjmejiglipccpnnnanhbledajbpd)
-  - [Turn on Custom Object Formatter in Chrome DevTools](http://bit.ly/object-formatters)
-- Firefox:
-  - [Vue.js devtools](https://addons.mozilla.org/en-US/firefox/addon/vue-js-devtools/)
-  - [Turn on Custom Object Formatter in Firefox DevTools](https://fxdx.dev/firefox-devtools-custom-object-formatters/)
+---
 
-## Type Support for `.vue` Imports in TS
+## 🛠️ Tech Stack
+Proyek ini dibangun menggunakan ekosistem modern untuk performa terbaik:
+- **Frontend Framework**: Vue 3 + Vite
+- **Bahasa Pemrograman**: TypeScript
+- **Styling**: CSS / TailwindCSS
 
-TypeScript cannot handle type information for `.vue` imports by default, so we replace the `tsc` CLI with `vue-tsc` for type checking. In editors, we need [Volar](https://marketplace.visualstudio.com/items?itemName=Vue.volar) to make the TypeScript language service aware of `.vue` types.
+---
 
-## Customize configuration
+## 🚀 Panduan Instalasi & Penggunaan
 
-See [Vite Configuration Reference](https://vite.dev/config/).
+### Prasyarat (Prerequisites)
+Pastikan Anda telah menginstal perangkat lunak berikut di sistem Anda:
+- [Node.js](https://nodejs.org/) (Versi 16 atau yang lebih baru direkomendasikan)
+- Package Manager: `npm`, `yarn`, atau `pnpm`
 
-## Project Setup
+### Langkah-langkah Instalasi
 
-```sh
-npm install
-```
+1. **Clone Repositori**
+   Unduh kode sumber proyek ini ke komputer lokal Anda:
+   ```bash
+   git clone https://github.com/wannnn27/E-mount.git
+   ```
 
-### Compile and Hot-Reload for Development
+2. **Masuk ke Direktori Proyek**
+   ```bash
+   cd E-mount
+   ```
 
-```sh
+3. **Instal Dependensi**
+   Unduh dan pasang semua library yang dibutuhkan oleh proyek:
+   ```bash
+   npm install
+   ```
+
+### Menjalankan Server Pengembangan (Development)
+Untuk menjalankan aplikasi dalam mode pengembangan dengan fitur *Hot-Module Replacement* (HMR):
+```bash
 npm run dev
 ```
+Setelah server berjalan, buka browser dan akses aplikasi melalui `http://localhost:5173` (atau port lain yang tertera di terminal).
 
-### Type-Check, Compile and Minify for Production
-
-```sh
+### Build & Produksi
+Untuk mengkompilasi, mengecek tipe data, dan me-minify kode aplikasi agar siap di-deploy ke server produksi:
+```bash
 npm run build
 ```
+File hasil kompilasi akan otomatis dibuat di dalam folder `dist/`.
 
-### Lint with [ESLint](https://eslint.org/)
-
-```sh
+### Linting & Perbaikan Kode
+Untuk mengecek kualitas kode dan memperbaiki isu _formatting_ secara otomatis menggunakan ESLint:
+```bash
 npm run lint
 ```
 
-# E-mount
+---
+
+## 📞 Dukungan & Kontribusi
+Proyek ini merupakan purwarupa (prototype) untuk mendigitalisasi proses pendakian gunung.
+Jika Anda menemukan _bug_ atau ingin berkontribusi menambahkan fitur baru, jangan ragu untuk membuat *Pull Request* atau melaporkannya di tab *Issues* pada repositori GitHub ini.
+
+Selamat menggunakan E-Mountainous, dan selalu utamakan keselamatan saat mendaki! 🏕️
