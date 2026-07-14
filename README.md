@@ -1,16 +1,16 @@
-# E-Mountainous 🏔️
+# E-Mountainous 
 
 **E-Mountainous** adalah platform web booking tiket pendakian gunung yang dirancang untuk membantu pengelola basecamp dalam mendigitalisasi proses reservasi, mengelola kuota pendaki secara real-time, dan memberikan informasi keselamatan (seperti estimasi cuaca) kepada pendaki.
 
-## ✨ Fitur Utama
+## Fitur Utama
 
-### 🧗 Untuk Pendaki (User)
+### Untuk Pendaki (User)
 - **Cek Kuota Real-time**: Memastikan ketersediaan kuota sebelum berangkat ke basecamp.
 - **Booking Tiket Online**: Reservasi jadwal pendakian dengan mudah dan aman.
 - **Informasi Cuaca & Status Jalur**: Mengetahui kondisi cuaca dan keamanan jalur (buka/tutup) sebelum pendakian.
 - **E-Tiket QR Code**: Bukti booking digital yang praktis dan bisa discan saat check-in di basecamp.
 
-### 🛡️ Untuk Pengelola (Admin Basecamp)
+### Untuk Pengelola (Admin Basecamp)
 - **Manajemen Kuota**: Mengatur batas jumlah pendaki harian untuk mencegah over-kapasitas dan menjaga kelestarian alam.
 - **Validasi Cepat**: Scan QR Code e-tiket pendaki saat kedatangan untuk proses check-in yang efisien.
 - **Update Status Jalur**: Menutup jalur secara instan jika cuaca buruk atau terjadi keadaan darurat.
@@ -18,7 +18,7 @@
 
 ---
 
-## 🛠️ Tech Stack
+## Tech Stack
 Proyek ini dibangun menggunakan ekosistem modern untuk performa terbaik:
 - **Frontend Framework**: Vue 3 + Vite
 - **Bahasa Pemrograman**: TypeScript
@@ -26,7 +26,7 @@ Proyek ini dibangun menggunakan ekosistem modern untuk performa terbaik:
 
 ---
 
-## 🚀 Panduan Instalasi & Penggunaan
+## Panduan Instalasi & Penggunaan
 
 ### Prasyarat (Prerequisites)
 Pastikan Anda telah menginstal perangkat lunak berikut di sistem Anda:
@@ -72,10 +72,3 @@ Untuk mengecek kualitas kode dan memperbaiki isu _formatting_ secara otomatis me
 npm run lint
 ```
 
----
-
-## 📞 Dukungan & Kontribusi
-Proyek ini merupakan purwarupa (prototype) untuk mendigitalisasi proses pendakian gunung.
-Jika Anda menemukan _bug_ atau ingin berkontribusi menambahkan fitur baru, jangan ragu untuk membuat *Pull Request* atau melaporkannya di tab *Issues* pada repositori GitHub ini.
-
-Selamat menggunakan E-Mountainous, dan selalu utamakan keselamatan saat mendaki! 🏕️
