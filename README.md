@@ -26,6 +26,23 @@ Proyek ini dibangun menggunakan ekosistem modern untuk performa terbaik:
 
 ---
 
+## Akun Demo (Demo Credentials)
+Untuk mencoba fitur aplikasi secara langsung tanpa perlu mendaftar, Anda dapat masuk (Login) menggunakan kredensial bawaan berikut:
+
+**1. Pengelola Basecamp (Admin)**
+*Akses dashboard, atur kuota, update status jalur, dan scan tiket.*
+- **Email**: `admin@emountainous.id`
+- **Password**: `admin123`
+
+**2. Pendaki (User)**
+*Cek ketersediaan kuota, simulasi booking tiket, dan mendapatkan e-Tiket.*
+- **Email**: `adi@gmail.com`
+- **Password**: `adi123`
+
+> **Tip**: Anda juga bisa membuat akun pendaki baru secara mandiri melalui menu **Registrasi**.
+
+---
+
 ## Panduan Instalasi & Penggunaan
 
 ### Prasyarat (Prerequisites)
