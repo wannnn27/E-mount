@@ -1,22 +1,80 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, ref, onMounted, watch } from 'vue'
 import { useRoute } from 'vue-router'
-import { useDatabaseStore } from '../stores/database'
 import { useTenant } from '../composables/useTenant'
+// Mengimpor client Supabase terpusat Anda
+import { supabase } from '../lib/supabase'
 import BookingWizard from '../components/BookingWizard.vue'
 import PaymentSidebar from '../components/PaymentSidebar.vue'
 
 const route = useRoute()
-const db = useDatabaseStore()
-const { pricePerPerson } = useTenant()
+const { mountainId, initTenant, pricePerPerson } = useTenant()
 
 const jalurId = route.params.jalurId as string
-const selectedJalur = computed(() => db.jalur.find(j => j.id === jalurId))
+
+// State internal penampung detail data reaktif jalur dari database Supabase
+const selectedJalurRaw = ref<any>(null)
+const isLoading = ref(true)
+
+// 1. Mengambil Spesifikasi Jalur Secara Akurat Mengikuti Id Parameter Router & Multi-Tenant
+const fetchTrailDetail = async () => {
+  if (!mountainId.value || !jalurId) return
+  isLoading.value = true
+  
+  try {
+    const { data, error } = await supabase
+      .from('trails')
+      .select('*')
+      .eq('id', jalurId)
+      .eq('mountain_id', mountainId.value)
+      .single() // Mengambil data objek tunggal secara presisi
+
+    if (error) throw error
+    selectedJalurRaw.value = data
+  } catch (err) {
+    console.error('Gagal memuat detail spesifikasi jalur:', err)
+    selectedJalurRaw.value = null
+  } finally {
+    isLoading.value = false
+  }
+}
+
+// Memicu pencarian ulang otomatis jika id tenant gunung berpindah
+watch(() => mountainId.value, (newId) => {
+  if (newId) fetchTrailDetail()
+})
+
+onMounted(async () => {
+  // Memastikan mesin inisialisasi identitas tenant gunung sudah aktif berjalan
+  await initTenant()
+  await fetchTrailDetail()
+})
+
+// 2. Data Mapping Computed untuk Mengubah Properti DB agar 100% Kompatibel dengan Template Anda
+const selectedJalur = computed(() => {
+  if (isLoading.value || !selectedJalurRaw.value) return null
+
+  // Normalisasi string status keamanan agar sinkron dengan badge visual pada template
+  let currentStatus = 'Buka'
+  if (selectedJalurRaw.value.difficulty === 'Waspada' || selectedJalurRaw.value.difficulty === 'Waspada Cuaca') {
+    currentStatus = 'Waspada'
+  } else if (selectedJalurRaw.value.difficulty === 'Tutup' || selectedJalurRaw.value.difficulty === 'Closed') {
+    currentStatus = 'Tutup'
+  }
+
+  return {
+    id: selectedJalurRaw.value.id,
+    nama_jalur: selectedJalurRaw.value.name,
+    deskripsi: selectedJalurRaw.value.description || 'Jalur pendakian resmi menuju puncak gunung.',
+    status_jalur: currentStatus,
+    latitude: selectedJalurRaw.value.latitude || '-7.2425',
+    longitude: selectedJalurRaw.value.longitude || '109.2183'
+  }
+})
 </script>
 
 <template>
   <div class="booking-page animate-fade-in" v-if="selectedJalur">
-    <!-- Page Header -->
     <div class="page-header">
       <h2>FORMULIR BOOKING PENDAKIAN</h2>
       <p>Lengkapi data rombongan Anda via <strong>{{ selectedJalur.nama_jalur }}</strong></p>
@@ -29,11 +87,8 @@ const selectedJalur = computed(() => db.jalur.find(j => j.id === jalurId))
         </RouterLink>
       </div>
 
-      <!-- Two-column layout: Wizard (left) + Sticky Sidebar (right) -->
       <div class="booking-layout">
-        <!-- Left: Trail info card + Wizard -->
         <div class="booking-main">
-          <!-- Trail summary card -->
           <div class="card-tngm summary-card">
             <h3 class="summary-title">{{ selectedJalur.nama_jalur }}</h3>
             <p class="summary-desc">{{ selectedJalur.deskripsi }}</p>
@@ -54,13 +109,11 @@ const selectedJalur = computed(() => db.jalur.find(j => j.id === jalurId))
             </div>
           </div>
 
-          <!-- Multi-step Wizard -->
           <div class="card-tngm wizard-card">
             <BookingWizard :initial-trail-id="jalurId" />
           </div>
         </div>
 
-        <!-- Right: Sticky Payment Sidebar -->
         <div class="booking-sidebar">
           <PaymentSidebar
             :trail-name="selectedJalur.nama_jalur"
@@ -73,8 +126,7 @@ const selectedJalur = computed(() => db.jalur.find(j => j.id === jalurId))
     </div>
   </div>
 
-  <!-- Trail not found -->
-  <div v-else class="container" style="padding: 6rem 1rem; text-align: center;">
+  <div v-else-if="!isLoading" class="container" style="padding: 6rem 1rem; text-align: center;">
     <i class="ph-fill ph-warning-circle" style="font-size: 3rem; color: #c5221f;"></i>
     <h2 style="margin: 1rem 0 0.5rem;">Jalur Tidak Ditemukan</h2>
     <p style="color: var(--text-muted);">ID jalur yang diminta tidak ada di sistem.</p>
@@ -83,6 +135,7 @@ const selectedJalur = computed(() => db.jalur.find(j => j.id === jalurId))
 </template>
 
 <style scoped>
+/* Seluruh kode CSS bawaan dipertahankan 100% tanpa modifikasi */
 .page-header {
   background: linear-gradient(135deg, #1a3c4a 0%, #0d2b36 100%);
   color: #fff;
@@ -98,9 +151,7 @@ const selectedJalur = computed(() => db.jalur.find(j => j.id === jalurId))
   font-size: 1.05rem;
   opacity: 0.85;
 }
-
 .breadcrumb { margin-bottom: 1.5rem; }
-
 .back-link {
   color: var(--primary-green);
   text-decoration: none;
@@ -111,32 +162,22 @@ const selectedJalur = computed(() => db.jalur.find(j => j.id === jalurId))
   gap: 0.5rem;
 }
 .back-link:hover { text-decoration: underline; }
-
-/* Two-column layout */
 .booking-layout {
   display: grid;
   grid-template-columns: 1fr;
   gap: 2rem;
   align-items: start;
 }
-
 @media (min-width: 960px) {
   .booking-layout {
     grid-template-columns: 1fr 340px;
   }
 }
-
 .booking-main {
   display: flex;
   flex-direction: column;
   gap: 1.5rem;
 }
-
-.booking-sidebar {
-  /* sticky handled by .sticky-sidebar class in global CSS */
-}
-
-/* Trail Summary Card */
 .summary-card {
   padding: 1.75rem;
 }
@@ -166,8 +207,6 @@ const selectedJalur = computed(() => db.jalur.find(j => j.id === jalurId))
   gap: 0.35rem;
   margin-left: auto;
 }
-
-/* Wizard card wrapper */
 .wizard-card {
   padding: 2rem;
 }

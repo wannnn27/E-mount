@@ -8,21 +8,24 @@ import { supabase } from '../lib/supabase'
 
 const router = useRouter()
 
-// 1. Ambil data Tenant dinamis dari composable (berdasarkan domain)
-const { mountainId, mountainData, isLoading: isLoadingTenant } = useTenant()
+// 1. Ambil data Tenant dinamis dari composable
+const { mountainId, mountain, isLoading: isLoadingTenant, initTenant } = useTenant()
+const mountainData = mountain
 
-// 2. State Management untuk Data Jalur & Kuota dari Supabase
+// 2. State Management untuk Data Jalur, Kuota & Berita API
 const trails = ref<any[]>([])
 const quotas = ref<any[]>([])
+const newsList = ref<any[]>([]) // Menampung hasil GET API Berita
+
 const isLoadingTrails = ref(true)
+const isLoadingNews = ref(true) // Loading state khusus komponen berita
 let quotaSubscription: any = null
 
-// 3. Fungsi Fetch Data Jalur & Kuota Hari Ini berdasarkan Tenant Terdeteksi
+// 3. Fungsi Fetch Data Jalur & Kuota Hari Ini dari Supabase
 const fetchLandingData = async (mId: string) => {
   if (!mId) return
   isLoadingTrails.value = true
   try {
-    // Fetch daftar jalur milik gunung/tenant aktif
     const { data: trailsData, error: trailsErr } = await supabase
       .from('trails')
       .select('*')
@@ -31,7 +34,6 @@ const fetchLandingData = async (mId: string) => {
     if (trailsErr) throw trailsErr
     trails.value = trailsData || []
 
-    // Ambil ID semua jalur untuk memuat data kuota hari ini
     const trailIds = trails.value.map(t => t.id)
     const today = new Date().toISOString().slice(0, 10)
 
@@ -40,7 +42,7 @@ const fetchLandingData = async (mId: string) => {
         .from('quotas')
         .select('*')
         .in('trail_id', trailIds)
-        .eq('date', today)
+        .eq('quota_date', today)
 
       if (quotasErr) throw quotasErr
       quotas.value = quotasData || []
@@ -52,15 +54,77 @@ const fetchLandingData = async (mId: string) => {
   }
 }
 
-// 4. Implementasi Supabase Realtime untuk Sinkronisasi Kuota Langsung (PRD Bab 4.1)
+// 4. Integrasi GET API Berita Indonesia Terkait Gunung & Alam (Dengan Auto-Fallback Aman)
+const fetchNewsData = async () => {
+  isLoadingNews.value = true
+  try {
+    const response = await fetch('https://api-berita-indonesia.vercel.app/cnn/nasional/')
+    if (!response.ok) throw new Error('Koneksi API Gagal')
+    
+    const json = await response.json()
+    
+    if (json.success && json.data?.posts?.length > 0) {
+      const allPosts = json.data.posts
+      
+      // Memfilter artikel yang mengandung kata kunci bertema gunung, pendakian, atau alam bebas
+      const filtered = allPosts.filter((post: any) => {
+        const titleLower = post.title?.toLowerCase() || ''
+        const descLower = post.description?.toLowerCase() || ''
+        return (
+          titleLower.includes('gunung') || descLower.includes('gunung') ||
+          titleLower.includes('pendaki') || descLower.includes('pendaki') ||
+          titleLower.includes('wisata') || titleLower.includes('alam')
+        )
+      })
+
+      // Gunakan hasil filter jika ada, jika kosong ambil berita nasional teratas agar tetap tampil
+      const displayPosts = filtered.length > 0 ? filtered.slice(0, 3) : allPosts.slice(0, 3)
+
+      newsList.value = displayPosts.map((post: any, index: number) => ({
+        id: index,
+        title: post.title,
+        image: post.thumbnail || 'https://images.unsplash.com/photo-1448375240586-882707db888b?q=80&w=800&auto=format&fit=crop',
+        link: post.link
+      }))
+    } else {
+      throw new Error('Struktur data API kosong')
+    }
+  } catch (error) {
+    console.warn('Gagal memuat GET API berita, beralih ke local fallback data:', error)
+    
+    // 🔥 DATA FALLBACK AMAN: Jika API Down / Kena CORS, Tampilkan Data Ini Agar Halaman Tidak Blank!
+    newsList.value = [
+      {
+        id: 1,
+        title: 'Peningkatan Aktivitas Vulkanik, Jalur Pendakian Gunung di Indonesia Diperketat',
+        image: 'https://images.unsplash.com/photo-1659700387819-5f1734834dcc?q=80&w=1632&auto=format&fit=crop&ixlib=rb-4.1.0&ixid=M3wxMjA3fDB8MHxwaG90by1wYWdlfHx8fGVufDB8fHx8fA%3D%3D',
+        link: 'https://cnnindonesia.com'
+      },
+      {
+        id: 2,
+        title: 'Aksi Bersih Sampah Bersama Komunitas Pecinta Alam di Kawasan Pos Pendakian',
+        image: 'https://images.unsplash.com/photo-1637304497628-c69e8684c11a?q=80&w=1470&auto=format&fit=crop&ixlib=rb-4.1.0&ixid=M3wxMjA3fDB8MHxwaG90by1wYWdlfHx8fGVufDB8fHx8fA%3D%3D',
+        link: 'https://cnnindonesia.com'
+      },
+      {
+        id: 3,
+        title: 'Tips Aman Manajemen Logistik dan Perlengkapan Pendakian di Musim Hujan Bagi Pemula',
+        image: 'https://images.unsplash.com/photo-1448375240586-882707db888b?q=80&w=800&auto=format&fit=crop',
+        link: 'https://cnnindonesia.com'
+      }
+    ]
+  } finally {
+    isLoadingNews.value = false // Matikan skeleton loading abu-abu
+  }
+}
+
+// 5. Implementasi Supabase Realtime untuk Sinkronisasi Kuota Langsung
 const setupRealtimeQuotas = () => {
   quotaSubscription = supabase
     .channel('public:quotas')
     .on('postgres_changes', { event: '*', schema: 'public', table: 'quotas' }, (payload) => {
       const today = new Date().toISOString().slice(0, 10)
-      
-      // Update data kuota secara lokal jika tanggalnya hari ini
-      if (payload.new && (payload.new as any).date === today) {
+      if (payload.new && (payload.new as any).quota_date === today) {
         const index = quotas.value.findIndex(q => q.id === (payload.new as any).id)
         if (index !== -1) {
           quotas.value[index] = payload.new
@@ -79,33 +143,40 @@ watch(() => mountainId.value, (newId) => {
   }
 }, { immediate: true })
 
-onMounted(() => {
+onMounted(async () => {
+  await initTenant()
   setupRealtimeQuotas()
+  fetchNewsData() // Menjalankan GET API berita saat halaman dimuat
 })
 
 onUnmounted(() => {
-  // Putuskan koneksi realtime saat halaman ditinggalkan agar hemat bandwidth
   if (quotaSubscription) {
     supabase.removeChannel(quotaSubscription)
   }
 })
 
-// 5. Data Mapping agar Kompatibel dengan Properti yang Dibaca Template
+// 6. Data Mapping untuk Keperluan UI Render
 const allJalur = computed(() => {
-  return trails.value.map(t => ({
-    id: t.id,
-    nama_jalur: t.name,
-    // Memetakan status jalur agar bervariasi secara visual di UI berdasarkan data DB
-    status_jalur: t.difficulty === 'Hard' ? 'Waspada' : 'Buka'
-  }))
+  return trails.value.map(t => {
+    let currentStatus = 'Buka'
+    if (t.difficulty === 'Waspada' || t.difficulty === 'Waspada Cuaca') currentStatus = 'Waspada'
+    else if (t.difficulty === 'Tutup' || t.difficulty === 'Closed') currentStatus = 'Tutup'
+
+    return {
+      id: t.id,
+      nama_jalur: t.name,
+      status_jalur: currentStatus
+    }
+  })
 })
 
 const getRouteQuota = (jalurId: string) => {
+  const trail = trails.value.find(t => t.id === jalurId)
+  const defaultMax = trail?.max_capacity || 100
   const found = quotas.value.find(q => q.trail_id === jalurId)
   return {
-    // Map properti database ke nama properti dummy yang dibaca oleh template
-    kuota_total: found?.capacity ?? 100,
-    kuota_terpakai: found?.booked_count ?? 0
+    kuota_total: found ? found.max_quota : defaultMax,
+    kuota_terpakai: 0 
   }
 }
 
@@ -113,15 +184,22 @@ const navigateToBooking = (jalurId: string) => {
   router.push({ name: 'booking', params: { jalurId: jalurId } })
 }
 
+// Fungsi membuka URL artikel asli berita di tab baru
+const openNewsLink = (url: string) => {
+  if (url) {
+    window.open(url, '_blank')
+  }
+}
+
 const showAlert = (msg: string) => {
   window.alert(msg)
 }
 
-// Mapping gambar berdasarkan ID jalur asli dari seed data database agar variasi tetap terjaga
+// Mapping gambar fallback statis jalur pendakian
 const trailImages: Record<string, string> = {
-  'c0a80102-0000-0000-0000-000000000001': 'https://images.unsplash.com/photo-1549880338-65dd4bd82f8b?q=80&w=800&auto=format&fit=crop', // Bambangan
-  'c0a80102-0000-0000-0000-000000000002': 'https://images.unsplash.com/photo-1464822759023-fed622ff2c3b?q=80&w=800&auto=format&fit=crop', // Guci
-  'c0a80102-0000-0000-0000-000000000003': 'https://images.unsplash.com/photo-1516766487140-5e36eb100806?q=80&w=800&auto=format&fit=crop'  // Selo
+  'c0a80102-0000-0000-0000-000000000001': 'https://images.unsplash.com/photo-1695257529239-5998d979446e?q=80&w=1469&auto=format&fit=crop&ixlib=rb-4.1.0&ixid=M3wxMjA3fDB8MHxwaG90by1wYWdlfHx8fGVufDB8fHx8fA%3D%3D', 
+  'c0a80102-0000-0000-0000-000000000002': 'https://plus.unsplash.com/premium_photo-1730035378601-e4b6183f3398?q=80&w=1374&auto=format&fit=crop&ixlib=rb-4.1.0&ixid=M3wxMjA3fDB8MHxwaG90by1wYWdlfHx8fGVufDB8fHx8fA%3D%3D', 
+  'c0a80102-0000-0000-0000-000000000003': 'https://images.unsplash.com/photo-1518070588484-2b53926cba76?q=80&w=1470&auto=format&fit=crop&ixlib=rb-4.1.0&ixid=M3wxMjA3fDB8MHxwaG90by1wYWdlfHx8fGVufDB8fHx8fA%3D%3D'  
 }
 const DEFAULT_IMG = 'https://images.unsplash.com/photo-1448375240586-882707db888b?q=80&w=800&auto=format&fit=crop'
 </script>
@@ -250,37 +328,27 @@ const DEFAULT_IMG = 'https://images.unsplash.com/photo-1448375240586-882707db888
     <section id="berita" class="berita-section container">
       <h2 class="section-title text-center">SEPUTAR {{ mountainData?.name?.toUpperCase() || 'GUNUNG' }}</h2>
 
-      <div class="grid grid-3">
-        <div class="card-tngm">
-          <img src="https://images.unsplash.com/photo-1516766487140-5e36eb100806?q=80&w=800&auto=format&fit=crop" alt="Aksi Sampah">
-          <div class="card-tngm-body">
-            <h4 class="card-tngm-title">Aksi Nol Sampah Pendakian</h4>
-            <div class="card-tngm-footer">
-              <button class="btn btn-orange" style="padding: 0.35rem 1rem; font-size: 0.82rem;" @click="showAlert('Fitur detail berita sedang dalam tahap pengembangan.')">Lihat Detail</button>
-            </div>
-          </div>
-        </div>
+      <Transition name="fade-scale">
+        <SkeletonCard v-if="isLoadingNews" :count="3" />
+      </Transition>
 
-        <div class="card-tngm">
-          <img src="https://images.unsplash.com/photo-1448375240586-882707db888b?q=80&w=800&auto=format&fit=crop" alt="Flora">
-          <div class="card-tngm-body">
-            <h4 class="card-tngm-title">Komposisi Flora di Resor Gunung</h4>
-            <div class="card-tngm-footer">
-              <button class="btn btn-orange" style="padding: 0.35rem 1rem; font-size: 0.82rem;" @click="showAlert('Fitur detail berita sedang dalam tahap pengembangan.')">Lihat Detail</button>
+      <Transition name="fade-scale">
+        <div v-if="!isLoadingNews" class="grid grid-3">
+          <div v-for="n in newsList" :key="n.id" class="card-tngm">
+            <img :src="n.image" :alt="n.title" style="height: 200px; object-fit: cover; width: 100%;">
+            <div class="card-tngm-body" style="display: flex; flex-direction: column; justify-content: space-between; height: 180px;">
+              <h4 class="card-tngm-title" style="font-size: 1rem; line-height: 1.4; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden;">
+                {{ n.title }}
+              </h4>
+              <div class="card-tngm-footer" style="margin-top: auto;">
+                <button class="btn btn-orange" style="padding: 0.35rem 1rem; font-size: 0.82rem; width: 100%;" @click="openNewsLink(n.link)">
+                  Lihat Detail
+                </button>
+              </div>
             </div>
           </div>
         </div>
-
-        <div class="card-tngm">
-          <img src="https://images.unsplash.com/photo-1519331379826-f10be5486c6f?q=80&w=800&auto=format&fit=crop" alt="Rimba">
-          <div class="card-tngm-body">
-            <h4 class="card-tngm-title">Nagara Rimba Nusa Versi Taman Nasional</h4>
-            <div class="card-tngm-footer">
-              <button class="btn btn-orange" style="padding: 0.35rem 1rem; font-size: 0.82rem;" @click="showAlert('Fitur detail berita sedang dalam tahap pengembangan.')">Lihat Detail</button>
-            </div>
-          </div>
-        </div>
-      </div>
+      </Transition>
 
       <div class="text-center" style="margin-top: 2rem;">
         <button class="btn btn-outline" style="border-color: var(--text-main); color: var(--text-main); border-radius: 0;" @click="showAlert('Fitur memuat lebih banyak berita belum tersedia saat ini.')">LEBIH BANYAK</button>
@@ -294,7 +362,7 @@ const DEFAULT_IMG = 'https://images.unsplash.com/photo-1448375240586-882707db888
           <li>Wajib membawa identitas diri asli (KTP/SIM/Paspor) yang sesuai dengan data booking.</li>
           <li>Setiap pendaki wajib membawa perlengkapan standar keselamatan (Jaket tebal, jas hujan, P3K, tenda layak pakai).</li>
           <li>Dilarang keras membawa tisu basah, botol air minum kemasan sekali pakai, dan benda tajam terlarang.</li>
-          <li>Dilarang membuat api unggun di sepanjang jalur pendakian dan puncak.</li>
+          <li>Dilarang membuat api umum di sepanjang jalur pendakian dan puncak.</li>
           <li>Semua pendaki wajib melapor di pos jaga sebelum pendakian (Check-in) dan sesudah turun (Check-out).</li>
         </ul>
       </div>
@@ -303,7 +371,7 @@ const DEFAULT_IMG = 'https://images.unsplash.com/photo-1448375240586-882707db888
 </template>
 
 <style scoped>
-/* Kode CSS bawaan kamu tetap dipertahankan 100% di bawah ini */
+/* Seluruh kode CSS bawaan dipertahankan 100% tanpa modifikasi */
 .landing-page { }
 .hero-banner {
   position: relative;

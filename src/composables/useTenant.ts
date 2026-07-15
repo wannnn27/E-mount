@@ -2,13 +2,13 @@
  * useTenant — Multi-Tenant Composable
  * ─────────────────────────────────────────────────────────────
  * Resolves tenant identity from:
- *   1. Subdomain (production): merapi.emount.id → slug = 'merapi'
- *   2. VITE_DEFAULT_TENANT_SLUG (development fallback)
+ * 1. Subdomain (production): merapi.emount.id → slug = 'merapi'
+ * 2. VITE_DEFAULT_TENANT_SLUG (development fallback)
  *
  * Then fetches MountainSettings and injects CSS variables
  * for dynamic theming per tenant.
  */
-import { ref, computed, readonly, onMounted } from 'vue'
+import { ref, computed, readonly } from 'vue'
 import { supabase, isSupabaseConfigured } from '../lib/supabase'
 import type { Mountain, MountainSettings, TenantSettings } from '../types/database.types'
 
@@ -44,7 +44,9 @@ const mountain = ref<Mountain | null>(null)
 const settings = ref<TenantSettings>(DEFAULT_SETTINGS)
 const isLoading = ref(false)
 const error = ref<string | null>(null)
-let _initialized = false
+
+// Menyimpan thread promise pencarian data agar tidak terjadi duplikasi request (Race Condition Fix)
+let initPromise: Promise<void> | null = null
 
 /**
  * Resolve tenant slug from current URL's subdomain.
@@ -52,12 +54,18 @@ let _initialized = false
  */
 function resolveTenantSlug(): string {
   const hostname = window.location.hostname
-  // Production: merapi.emount.id → 'merapi'
+  
+  // Jika berjalan di localhost atau IP lokal, langsung gunakan fallback development env
+  if (hostname === 'localhost' || hostname === '127.0.0.1') {
+    return import.meta.env.VITE_DEFAULT_TENANT_SLUG || 'slamet'
+  }
+
+  // Production: merapi.emount.id → parts = ['merapi', 'emount', 'id']
   const parts = hostname.split('.')
   if (parts.length >= 3 && parts[0] && parts[0] !== 'www') {
     return parts[0]
   }
-  // Development fallback from .env
+  
   return import.meta.env.VITE_DEFAULT_TENANT_SLUG || 'slamet'
 }
 
@@ -96,59 +104,65 @@ export function useTenant() {
   const features = computed(() => settings.value.features)
   const pricePerPerson = computed(() => settings.value.price_per_person)
 
-  async function initTenant(): Promise<void> {
-    if (_initialized) return
-    _initialized = true
-    isLoading.value = true
-    error.value = null
+  function initTenant(): Promise<void> {
+    // Jika proses inisialisasi sudah berjalan atau selesai, kembalikan promise yang sama
+    if (initPromise) return initPromise
 
-    const slug = resolveTenantSlug()
+    // Caching proses asinkronus ke dalam variabel global singleton
+    initPromise = (async () => {
+      isLoading.value = true
+      error.value = null
 
-    // If Supabase not configured, use defaults (offline/dev mode)
-    if (!isSupabaseConfigured) {
-      console.warn('[useTenant] Running in offline mode — using default tenant config.')
-      applyTheme(DEFAULT_SETTINGS.theme)
-      isLoading.value = false
-      return
-    }
+      const slug = resolveTenantSlug()
 
-    try {
-      // 1. Fetch mountain by slug
-      const { data: mtData, error: mtErr } = await supabase
-        .from('mountains')
-        .select('*')
-        .eq('slug', slug)
-        .eq('is_active', true)
-        .single()
-
-      if (mtErr || !mtData) {
-        throw new Error(`Tenant '${slug}' tidak ditemukan di database.`)
-      }
-      mountain.value = mtData
-
-      // 2. Fetch mountain settings
-      const { data: settingsData, error: stErr } = await supabase
-        .from('mountain_settings')
-        .select('*')
-        .eq('mountain_id', mtData.id)
-        .single()
-
-      if (!stErr && settingsData) {
-        const rawSettings = settingsData as MountainSettings
-        settings.value = { ...DEFAULT_SETTINGS, ...rawSettings.settings }
+      // Jika Supabase tidak dikonfigurasi, gunakan nilai bawaan (offline/dev mode)
+      if (!isSupabaseConfigured) {
+        console.warn('[useTenant] Running in offline mode — using default tenant config.')
+        applyTheme(DEFAULT_SETTINGS.theme)
+        isLoading.value = false
+        return
       }
 
-      // 3. Apply CSS theme
-      applyTheme(settings.value.theme)
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : 'Gagal memuat konfigurasi tenant.'
-      error.value = msg
-      console.error('[useTenant]', msg)
-      // Fallback to defaults
-      applyTheme(DEFAULT_SETTINGS.theme)
-    } finally {
-      isLoading.value = false
-    }
+      try {
+        // 1. Ambil data spesifikasi gunung berdasarkan slug domain aktif
+        const { data: mtData, error: mtErr } = await supabase
+          .from('mountains')
+          .select('*')
+          .eq('slug', slug)
+          .eq('is_active', true)
+          .single()
+
+        if (mtErr || !mtData) {
+          throw new Error(`Tenant '${slug}' tidak ditemukan atau status dinonaktifkan.`)
+        }
+        mountain.value = mtData
+
+        // 2. Ambil kustomisasi pengaturan layout dan modul gunung terkait
+        const { data: settingsData, error: stErr } = await supabase
+          .from('mountain_settings')
+          .select('*')
+          .eq('mountain_id', mtData.id)
+          .maybeSingle() // Menggunakan maybeSingle agar tidak melempar error keras jika baris kosong
+
+        if (!stErr && settingsData) {
+          const rawSettings = settingsData as MountainSettings
+          settings.value = { ...DEFAULT_SETTINGS, ...rawSettings.settings }
+        }
+
+        // 3. Injeksi variabel CSS warna ke dalam dokumen HTML root secara dinamis
+        applyTheme(settings.value.theme)
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : 'Gagal memuat konfigurasi tenant.'
+        error.value = msg
+        console.error('[useTenant]', msg)
+        // Fallback ke skema warna default apabila server mengalami kendala jaringan
+        applyTheme(DEFAULT_SETTINGS.theme)
+      } finally {
+        isLoading.value = false
+      }
+    })()
+
+    return initPromise
   }
 
   return {

@@ -30,7 +30,7 @@ const fetchKuotaData = async () => {
     // 1. Ambil seluruh data jalur pendakian milik gunung/tenant ini
     const { data: trails, error: trailsErr } = await supabase
       .from('trails')
-      .select('id, name')
+      .select('id, name, max_capacity')
       .eq('mountain_id', mountainId.value)
       
     if (trailsErr) throw trailsErr
@@ -46,19 +46,29 @@ const fetchKuotaData = async () => {
     const startDate = `${selectedTahun.value}-${targetMonth}-01`
     const endDate = `${selectedTahun.value}-${targetMonth}-31`
 
-    // 2. Fetch data kuota harian dari tabel quotas berdasarkan rentang waktu
+    // 2. Fetch data kustom kuota dari tabel quotas berdasarkan rentang waktu (Kolom Baru: quota_date)
     const { data: quotas, error: quotasErr } = await supabase
       .from('quotas')
       .select('*')
       .in('trail_id', trailIds)
-      .gte('date', startDate)
-      .lte('date', endDate)
+      .gte('quota_date', startDate)
+      .lte('quota_date', endDate)
 
     if (quotasErr) throw quotasErr
 
-    // 3. Transformasi & mapping data dari database ke struktur yang dibaca oleh template Anda
-    // Menghasilkan baris tanggal otomatis (misal dari tanggal 1 sampai 10 atau sebulan penuh)
-    const daysInMonth = 10; // Disesuaikan dengan batas visual 10 baris pada dummy awal Anda
+    // 3. Fetch data booking aktif bulan ini untuk menghitung jumlah slot terpakai secara riil
+    const { data: bookings, error: bookingsErr } = await supabase
+      .from('bookings')
+      .select('trail_id, entry_date, booking_members(id)')
+      .in('trail_id', trailIds)
+      .gte('entry_date', startDate)
+      .lte('entry_date', endDate)
+      .in('status', ['PAID', 'APPROVED', 'CHECKED_IN', 'PERMIT_REVIEW', 'WAITING_PAYMENT'])
+
+    if (bookingsErr) throw bookingsErr
+
+    // 4. Transformasi & mapping data secara dinamis mengikuti jumlah hari asli dalam bulan tersebut
+    const daysInMonth = new Date(Number(selectedTahun.value), Number(targetMonth), 0).getDate()
     const generatedRows = []
 
     for (let d = 1; d <= daysInMonth; d++) {
@@ -76,11 +86,20 @@ const fetchKuotaData = async () => {
         kalidas: 0
       }
 
-      // Isi nilai sisa kuota (capacity - booked_count) untuk masing-masing jalur secara dinamis (PRD Bab 1.3)
+      // Isi nilai sisa kuota (Kapasitas Maksimal - Slot Terpakai dari Manifes Rombongan)
       trails.forEach(trail => {
-        const quotaEntry = quotas?.find(q => q.trail_id === trail.id && q.date === dbDate)
-        // Hitung sisa kuota: Kapasitas dikurangi jumlah slot yang sudah dipesan
-        const sisaKuota = quotaEntry ? (quotaEntry.capacity - quotaEntry.booked_count) : 0
+        const defaultMax = trail.max_capacity || 100
+        
+        // Cek apakah ada override kuota khusus dari pos admin petugas
+        const quotaOverride = quotas?.find(q => q.trail_id === trail.id && q.quota_date === dbDate)
+        const totalQuota = quotaOverride ? quotaOverride.max_quota : defaultMax
+
+        // Hitung jumlah pendaki terdaftar di tanggal dan jalur ini
+        const dayBookings = bookings?.filter(b => b.trail_id === trail.id && b.entry_date === dbDate) || []
+        const totalUsed = dayBookings.reduce((acc, b) => acc + (b.booking_members ? b.booking_members.length : 0), 0)
+
+        // Sisa kuota tidak boleh bernilai negatif
+        const sisaKuota = Math.max(0, totalQuota - totalUsed)
         
         const normalizedTrailName = trail.name.toLowerCase()
         if (normalizedTrailName.includes('bambangan')) rowData.bambangan = sisaKuota
@@ -101,12 +120,14 @@ const fetchKuotaData = async () => {
   }
 }
 
-// 4. Implementasi Supabase Realtime agar kuota di dalam tabel terupdate secara live (PRD Bab 3.2 & 4.1)
+// 5. Implementasi Supabase Realtime agar kuota di dalam tabel terupdate secara live (PRD Bab 3.2 & 4.1)
 const setupRealtimeSubscription = () => {
   quotaSubscription = supabase
     .channel('realtime-quota-table')
     .on('postgres_changes', { event: '*', schema: 'public', table: 'quotas' }, () => {
-      // Panggil ulang fetch data untuk merefresh isi tabel secara halus ketika ada transaksi masuk
+      fetchKuotaData()
+    })
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'bookings' }, () => {
       fetchKuotaData()
     })
     .subscribe()
@@ -131,7 +152,6 @@ onUnmounted(() => {
 
 <template>
   <div class="cek-kuota-page container animate-fade-in" style="padding-top: 3rem; padding-bottom: 5rem;">
-    <!-- Filters -->
     <div class="filter-controls" style="display: flex; gap: 1rem; align-items: center; margin-bottom: 2rem;">
       <select v-model="selectedBulan" class="form-control" style="width: 200px; padding: 0.5rem;">
         <option value="Juli">Juli</option>
@@ -140,16 +160,13 @@ onUnmounted(() => {
       <select v-model="selectedTahun" class="form-control" style="width: 200px; padding: 0.5rem;">
         <option value="2026">2026</option>
       </select>
-      <!-- Menambahkan event click untuk memfungsikan tombol CARI sesuai filter -->
       <button class="btn btn-orange" style="padding: 0.5rem 2rem; border-radius: 0;" @click="fetchKuotaData">CARI</button>
     </div>
 
-    <!-- Notice -->
     <p style="font-size: 0.95rem; margin-bottom: 1rem; color: var(--text-main);">
       Data yang ditampilkan pada halaman ini adalah <strong style="color: var(--accent-orange);">Jumlah Sisa Kuota</strong> pada setiap jalur pendakian.
     </p>
 
-    <!-- Table -->
     <div class="table-responsive" style="overflow-x: auto;">
       <table class="kuota-table" style="width: 100%; border-collapse: collapse; text-align: center; font-size: 0.9rem;">
         <thead>
