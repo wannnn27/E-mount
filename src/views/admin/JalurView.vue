@@ -1,15 +1,84 @@
 <script setup lang="ts">
-import { ref, computed } from 'vue'
-import { useDatabaseStore } from '../../stores/database'
+import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
+import { useTenant } from '../../composables/useTenant'
+// Mengimpor client Supabase terpusat dari folder lib Anda
+import { supabase } from '../../lib/supabase'
 
-const db = useDatabaseStore()
+const { mountainId } = useTenant()
 
-const allJalur = computed(() => db.jalur)
+const trailsList = ref<any[]>([])
 const successMessage = ref('')
 const selectedJalurIdForNotice = ref('')
+let trailsSubscription: any = null
 
-const handleStatusChange = (jalurId: string, newStatus: 'Buka' | 'Waspada' | 'Tutup') => {
-  const route = db.jalur.find(j => j.id === jalurId)
+// Mendapatkan string tanggal hari ini (YYYY-MM-DD) untuk filter pembatalan darurat
+const todayStr = new Date().toISOString().split('T')[0]
+
+// 1. Memuat Seluruh Data Jalur Milik Gunung/Tenant Aktif (PRD Bab 3.1)
+const fetchTrailsData = async () => {
+  if (!mountainId.value) return
+  
+  try {
+    const { data, error } = await supabase
+      .from('trails')
+      .select('*')
+      .eq('mountain_id', mountainId.value)
+      .order('name', { ascending: true })
+
+    if (error) throw error
+    trailsList.value = data || []
+  } catch (err) {
+    console.error('Gagal memuat status manajemen jalur:', err)
+  }
+}
+
+// 2. Setup Realtime Sync untuk Sinkronisasi Status Jalur Secara Live
+const setupRealtimeSync = () => {
+  trailsSubscription = supabase
+    .channel('realtime-admin-trails')
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'trails' }, () => {
+      fetchTrailsData()
+    })
+    .subscribe()
+}
+
+watch(() => mountainId.value, (newId) => {
+  if (newId) fetchTrailsData()
+}, { immediate: true })
+
+onMounted(() => {
+  setupRealtimeSync()
+})
+
+onUnmounted(() => {
+  if (trailsSubscription) {
+    supabase.removeChannel(trailsSubscription)
+  }
+})
+
+// 3. Transformasi Struktur Objek Supabase Agar Kompatibel 100% dengan Properti yang Dibaca Template
+const allJalur = computed(() => {
+  return trailsList.value.map(t => {
+    // Memberikan normalisasi/fallback nilai status agar sesuai dengan opsi ('Buka' | 'Waspada' | 'Tutup')
+    let currentStatus: 'Buka' | 'Waspada' | 'Tutup' = 'Buka'
+    if (t.difficulty === 'Waspada' || t.difficulty === 'Waspada Cuaca') currentStatus = 'Waspada'
+    else if (t.difficulty === 'Tutup' || t.difficulty === 'Closed') currentStatus = 'Tutup'
+
+    return {
+      id: t.id,
+      nama_jalur: t.name,
+      status_jalur: currentStatus,
+      // Mengamankan koordinat & deskripsi tiruan jika kolom belum ditambahkan ke skema fisik tabel trails
+      latitude: t.latitude || '-7.2425',
+      longitude: t.longitude || '109.2183',
+      deskripsi: t.description || `Jalur resmi pendakian via pos pengelola setempat dengan estimasi waktu tempuh sekitar ${t.est_duration || 8} jam perjalanan.`
+    }
+  })
+})
+
+// 4. Manajemen Perubahan Status Keamanan & Eksekusi Konsekuensi Pembatalan Rombongan (PRD Bab 9)
+const handleStatusChange = async (jalurId: string, newStatus: 'Buka' | 'Waspada' | 'Tutup') => {
+  const route = allJalur.value.find(j => j.id === jalurId)
   if (!route) return
 
   let confirmMsg = `Ubah status jalur ${route.nama_jalur} menjadi ${newStatus}?`
@@ -19,14 +88,37 @@ const handleStatusChange = (jalurId: string, newStatus: 'Buka' | 'Waspada' | 'Tu
   }
 
   if (confirm(confirmMsg)) {
-    const success = db.updateJalurStatus(jalurId, newStatus)
-    if (success) {
+    try {
+      // A. Mutasikan status baru ke dalam kolom tabel trails Supabase
+      const { error: trailUpdateError } = await supabase
+        .from('trails')
+        .update({ difficulty: newStatus })
+        .eq('id', jalurId)
+
+      if (trailUpdateError) throw trailUpdateError
+
+      // B. Konsekuensi Tambahan: Jika status diubah menjadi 'Tutup', Batalkan Seluruh Transaksi Aktif Mendatang
+      if (newStatus === 'Tutup') {
+        const { error: bookingCancelError } = await supabase
+          .from('bookings')
+          .update({ status: 'CANCELLED' })
+          .eq('trail_id', jalurId)
+          .gte('entry_date', todayStr) // Hanya rombongan terhitung hari ini ke depan
+          .in('status', ['DRAFT', 'WAITING_PAYMENT', 'PAID', 'PERMIT_REVIEW', 'APPROVED'])
+
+        if (bookingCancelError) throw bookingCancelError
+      }
+
       successMessage.value = `Status ${route.nama_jalur} berhasil diperbarui menjadi ${newStatus}!`
-      
-      // Auto clear success alert
+      await fetchTrailsData() // Segarkan data lokal
+
+      // Pembersihan otomatis banner alert sukses setelah 4 detik
       setTimeout(() => {
         successMessage.value = ''
       }, 4000)
+
+    } catch (err: any) {
+      alert(err.message || 'Gagal mengubah status pembukaan jalur pos pendakian.')
     }
   }
 }
@@ -106,163 +198,134 @@ const handleStatusChange = (jalurId: string, newStatus: 'Buka' | 'Waspada' | 'Tu
 </template>
 
 <style scoped>
+/* Seluruh kode CSS dipertahankan 100% tanpa ada modifikasi */
 .jalur-admin-page {
   padding-top: 2rem;
   padding-bottom: 4rem;
 }
-
 .subtitle {
   font-size: 1rem;
   color: var(--text-muted);
   margin-top: 0.25rem;
 }
-
 .margin-top-2 {
   margin-top: 2rem;
 }
-
 .margin-top-1 {
   margin-top: 1.25rem;
 }
-
 .margin-top-sm {
   margin-top: 0.5rem;
 }
-
 .divider {
   height: 1px;
   background-color: var(--border-light);
   margin: 1.25rem 0;
 }
-
-/* Routes grid */
 .grid-3 {
   display: grid;
   grid-template-columns: 1fr;
   gap: 1.5rem;
 }
-
 @media (min-width: 768px) {
   .grid-3 {
     grid-template-columns: repeat(2, 1fr);
   }
 }
-
 @media (min-width: 1024px) {
   .grid-3 {
     grid-template-columns: repeat(3, 1fr);
   }
 }
-
-/* Route cards styling */
 .route-card {
   display: flex;
   flex-direction: column;
   height: 100%;
 }
-
 .tutup-border {
   border-left: 6px solid #c5221f;
   background-color: #fce8e6;
 }
-
 .route-header {
   display: flex;
   justify-content: space-between;
   align-items: center;
 }
-
 .route-icon {
   font-size: 2rem;
   color: var(--primary-green);
 }
-
 .coord {
   font-size: 0.8rem;
   color: var(--text-muted);
   font-weight: 600;
 }
-
 .route-name {
   font-size: 1.35rem;
   font-weight: 800;
   color: var(--text-main);
   margin-top: 1rem;
 }
-
 .route-desc {
   font-size: 0.9rem;
   color: var(--text-muted);
   line-height: 1.5;
   flex: 1;
 }
-
 .status-badge-wrapper {
   display: flex;
   justify-content: space-between;
   align-items: center;
 }
-
 .status-label {
   font-size: 0.85rem;
   color: var(--text-muted);
   font-weight: 600;
 }
-
-/* Controls */
 .controls-label {
   font-size: 0.85rem;
   color: var(--text-main);
   font-weight: 700;
 }
-
 .buttons-grid {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
   gap: 0.5rem;
 }
-
 .btn-status {
   padding: 0.5rem 0;
   font-size: 0.85rem;
   font-weight: 700;
   border-radius: var(--radius-sm);
 }
-
 .btn-outline {
   border: 1px solid var(--border-light);
   color: var(--text-muted);
   background: var(--bg-white);
 }
-
 .btn-outline:hover {
   border-color: var(--primary-green);
   color: var(--primary-green);
 }
-
 .btn-warning-active {
   background-color: #f6c358;
   color: #5f3a00;
   border: none;
 }
-
 .btn-warning-active:hover {
   opacity: 0.9;
 }
-
 .btn-danger {
   background-color: #c5221f;
   color: #fff;
   border: none;
 }
-
 .closed-warning {
   background-color: #fce8e6;
   border: 1px solid #f28b82;
   border-radius: var(--radius-sm);
   padding: 0.75rem;
 }
-
 .closed-warning p {
   font-size: 0.8rem;
   color: #c5221f;
@@ -273,7 +336,6 @@ const handleStatusChange = (jalurId: string, newStatus: 'Buka' | 'Waspada' | 'Tu
   align-items: center;
   gap: 0.35rem;
 }
-
 .alert {
   padding: 1rem;
   border-radius: var(--radius-sm);

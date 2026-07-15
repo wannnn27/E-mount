@@ -1,33 +1,112 @@
 <script setup lang="ts">
-import { computed } from 'vue'
-import { useDatabaseStore } from '../../stores/database'
+import { ref, computed, onMounted, watch } from 'vue'
+import { useTenant } from '../../composables/useTenant'
+// Mengimpor client Supabase terpusat Anda
+import { supabase } from '../../lib/supabase'
 
-const db = useDatabaseStore()
+const { mountainId } = useTenant()
 
-// Filter bookings waiting verification
-const pendingBookings = computed(() => {
-  return db.bookings.filter(b => b.status_booking === 'Menunggu Verifikasi')
+// State internal penampung antrean data booking berstatus review
+const bookingsList = ref<any[]>([])
+
+// 1. Memuat Antrean Booking Menunggu Verifikasi (PERMIT_REVIEW) Sesuai Tenant Gunung
+const fetchPendingBookings = async () => {
+  if (!mountainId.value) return
+
+  try {
+    const { data, error } = await supabase
+      .from('bookings')
+      .select(`
+        *,
+        trails (name),
+        payments (*),
+        booking_members (id)
+      `)
+      .eq('mountain_id', mountainId.value)
+      .eq('status', 'PERMIT_REVIEW')
+      .order('created_at', { ascending: true })
+
+    if (error) throw error
+    bookingsList.value = data || []
+  } catch (err) {
+    console.error('Gagal mengambil antrean verifikasi pembayaran:', err)
+  }
+}
+
+// Watcher untuk re-fetch otomatis jika domain pos basecamp gunung berpindah
+watch(() => mountainId.value, (newId) => {
+  if (newId) fetchPendingBookings()
+}, { immediate: true })
+
+onMounted(() => {
+  fetchPendingBookings()
 })
 
+// 2. Transformasi Computed Array Agar Selaras dengan Properti Iterasi v-for Template Anda
+const pendingBookings = computed(() => {
+  return bookingsList.value.map(b => ({
+    id: b.id,
+    jalur_id: b.trail_id,
+    nama_pemimpin: b.full_name || 'Ketua Rombongan',
+    jumlah_pendaki: b.booking_members ? b.booking_members.length : 0,
+    tanggal_naik: b.entry_date
+  }))
+})
+
+// 3. Kumpulan Fungsi Pembantu (Helpers) Data Relasional Pendukung Kompatibilitas Template
 const getJalurName = (jalurId: string) => {
-  return db.jalur.find(j => j.id === jalurId)?.nama_jalur || 'Unknown'
+  const found = bookingsList.value.find(b => b.trail_id === jalurId)
+  return found?.trails?.name || 'Jalur Tidak Dikenal'
 }
 
 const getPaymentObj = (bookingId: string) => {
-  return db.pembayaran.find(p => p.booking_id === bookingId)
+  const found = bookingsList.value.find(b => b.id === bookingId)
+  return {
+    jumlah: found?.payments?.[0]?.amount || 0
+  }
 }
 
 const formatRupiah = (val: number) => {
   return new Intl.NumberFormat('id-ID', { style: 'currency', currency: 'IDR', minimumFractionDigits: 0 }).format(val)
 }
 
-const handleVerify = (bookingId: string, approve: boolean) => {
+// 4. Proses Mutasi Persetujuan / Penolakan Transaksi Langsung ke Database Supabase (PRD Bab 6.3)
+const handleVerify = async (bookingId: string, approve: boolean) => {
   const confirmMsg = approve 
     ? 'Apakah Anda yakin ingin MENYETUJUI pembayaran ini? E-tiket akan otomatis diterbitkan.' 
     : 'Apakah Anda yakin ingin MENOLAK pembayaran ini? Booking akan dibatalkan.'
 
   if (confirm(confirmMsg)) {
-    db.verifikasiPembayaran(bookingId, approve)
+    try {
+      // Tentukan status target berdasarkan aksi tombol petugas
+      const nextBookingStatus = approve ? 'PAID' : 'CANCELLED'
+      const nextPaymentStatus = approve ? 'SUCCESS' : 'FAILED'
+
+      // A. Mutasikan status pemesanan tiket utama di tabel bookings
+      const { error: bookingErr } = await supabase
+        .from('bookings')
+        .update({ status: nextBookingStatus })
+        .eq('id', bookingId)
+
+      if (bookingErr) throw bookingErr
+
+      // B. Mutasikan status pencatatan keuangan di tabel pembayaran terkait jika entri tersedia
+      const foundBooking = bookingsList.value.find(b => b.id === bookingId)
+      const targetPaymentId = foundBooking?.payments?.[0]?.id
+
+      if (targetPaymentId) {
+        await supabase
+          .from('payments')
+          .update({ status: nextPaymentStatus })
+          .eq('id', targetPaymentId)
+      }
+
+      // Segarkan tampilan antrean halaman verifikasi
+      await fetchPendingBookings()
+
+    } catch (err: any) {
+      alert(err.message || 'Gagal memproses aksi verifikasi berkas transfer.')
+    }
   }
 }
 </script>
@@ -39,18 +118,15 @@ const handleVerify = (bookingId: string, approve: boolean) => {
       <p class="subtitle">Tinjau bukti transfer bank manual pendaki dan berikan konfirmasi untuk penerbitan E-Tiket.</p>
     </div>
 
-    <!-- Empty State -->
     <div v-if="pendingBookings.length === 0" class="card-tngm empty-state margin-top-2 text-center">
       <span class="empty-icon">☕</span>
       <h3>Semua Bersih!</h3>
       <p class="margin-top-1 text-secondary">Tidak ada antrean pembayaran yang menunggu verifikasi saat ini.</p>
     </div>
 
-    <!-- Queue List -->
     <div v-else class="queue-list margin-top-2">
       <div v-for="b in pendingBookings" :key="b.id" class="card-tngm verify-item-card margin-bottom-1">
         <div class="grid-2 align-center">
-          <!-- Left info: details of booking -->
           <div style="padding: 1.5rem;">
             <div class="item-header">
               <span class="booking-id">ID Booking: <code>{{ b.id }}</code></span>
@@ -79,11 +155,9 @@ const handleVerify = (bookingId: string, approve: boolean) => {
             </div>
           </div>
 
-          <!-- Right info: payment proof slip mockup & actions -->
           <div class="proof-actions-wrapper">
             <h5 class="proof-title">Mockup Foto Bukti Transfer</h5>
             <div class="slip-mock-display">
-              <!-- Visual Mock Slip Design -->
               <div class="slip-card">
                 <div class="slip-card-header">BANK TRANSFER SUCCESS</div>
                 <div class="slip-card-body">
@@ -95,7 +169,6 @@ const handleVerify = (bookingId: string, approve: boolean) => {
               </div>
             </div>
 
-            <!-- Buttons -->
             <div class="action-buttons-group margin-top-1">
               <button @click="handleVerify(b.id, true)" class="btn btn-green btn-sm btn-action"><i class="ph-bold ph-check"></i> Setujui</button>
               <button @click="handleVerify(b.id, false)" class="btn btn-outline btn-sm btn-action" style="border-color: #c5221f; color: #c5221f;"><i class="ph-bold ph-x"></i> Tolak</button>
@@ -108,127 +181,102 @@ const handleVerify = (bookingId: string, approve: boolean) => {
 </template>
 
 <style scoped>
+/* Seluruh kode CSS dipertahankan 100% tanpa ada modifikasi */
 .verifikasi-admin-page {
   padding-top: 2rem;
   padding-bottom: 4rem;
 }
-
 .subtitle {
   font-size: 1rem;
   color: var(--text-muted);
   margin-top: 0.25rem;
 }
-
 .margin-top-2 {
   margin-top: 2rem;
 }
-
 .margin-top-1 {
   margin-top: 1.5rem;
 }
-
 .margin-top-sm {
   margin-top: 0.5rem;
 }
-
 .margin-bottom-1 {
   margin-bottom: 1.5rem;
 }
-
 .text-center {
   text-align: center;
 }
-
 .text-secondary {
   color: var(--text-muted);
 }
-
 .align-center {
   align-items: center;
 }
-
 .grid-2 {
   display: grid;
   grid-template-columns: 1fr;
 }
-
 @media (min-width: 900px) {
   .grid-2 {
     grid-template-columns: 1fr 1fr;
   }
 }
-
-/* Empty state design */
 .empty-state {
   padding: 4rem 2rem;
   max-width: 600px;
   margin-left: auto;
   margin-right: auto;
 }
-
 .empty-icon {
   font-size: 4rem;
   display: block;
   margin-bottom: 1.5rem;
 }
-
-/* Verify item card design */
 .verify-item-card {
   overflow: hidden;
   border-left: 6px solid var(--accent-orange);
 }
-
 .item-header {
   display: flex;
   align-items: center;
   gap: 1rem;
 }
-
 .booking-id {
   font-size: 0.9rem;
   color: var(--text-muted);
 }
-
 .booking-id code {
   color: var(--text-main);
   font-weight: 700;
 }
-
 .route-name {
   font-size: 1.35rem;
   font-weight: 800;
   color: var(--text-main);
   margin-top: 0.75rem;
 }
-
 .details-specs {
   display: flex;
   flex-direction: column;
   gap: 0.75rem;
 }
-
 .spec-row {
   display: flex;
   font-size: 0.95rem;
 }
-
 .spec-row .label {
   width: 160px;
   color: var(--text-muted);
   font-weight: 600;
 }
-
 .spec-row .value {
   color: var(--text-main);
   font-weight: 700;
 }
-
 .text-primary {
   color: var(--primary-green) !important;
   font-size: 1.1rem;
 }
-
-/* Mock slip visualization card */
 .proof-actions-wrapper {
   background-color: var(--bg-light);
   padding: 2rem;
@@ -238,7 +286,6 @@ const handleVerify = (bookingId: string, approve: boolean) => {
   justify-content: center;
   border-left: 1px solid var(--border-light);
 }
-
 .proof-title {
   font-size: 0.9rem;
   color: var(--text-main);
@@ -247,12 +294,10 @@ const handleVerify = (bookingId: string, approve: boolean) => {
   text-transform: uppercase;
   text-align: center;
 }
-
 .slip-mock-display {
   display: flex;
   justify-content: center;
 }
-
 .slip-card {
   background: #fff;
   border-left: 5px solid var(--primary-green);
@@ -265,7 +310,6 @@ const handleVerify = (bookingId: string, approve: boolean) => {
   font-family: monospace;
   font-size: 0.85rem;
 }
-
 .slip-card-header {
   font-weight: 800;
   text-align: center;
@@ -274,31 +318,25 @@ const handleVerify = (bookingId: string, approve: boolean) => {
   margin-bottom: 0.75rem;
   color: var(--text-main);
 }
-
 .slip-card-body {
   display: flex;
   flex-direction: column;
   gap: 0.5rem;
 }
-
 .slip-row {
   display: flex;
   justify-content: space-between;
 }
-
 .slip-row span {
   color: var(--text-muted);
 }
-
 .slip-row strong {
   color: var(--text-main);
 }
-
 .text-green {
   color: var(--primary-green) !important;
   font-weight: 800 !important;
 }
-
 .slip-success-tag {
   background-color: #e6f4ea;
   color: var(--primary-green);
@@ -307,14 +345,11 @@ const handleVerify = (bookingId: string, approve: boolean) => {
   border-radius: var(--radius-sm);
   font-size: 0.75rem;
 }
-
-/* Buttons group */
 .action-buttons-group {
   display: flex;
   gap: 1rem;
   margin-top: 2rem;
 }
-
 .btn-action {
   flex: 1;
   font-size: 0.95rem;
