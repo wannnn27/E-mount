@@ -144,6 +144,14 @@ export const useDatabaseStore = defineStore('database', () => {
 
   // Reactive states
   const users = ref<User[]>(load('users', DEFAULT_USERS))
+  
+  // Pastikan akun admin & demo selalu ada meskipun localStorage sudah terisi sebelumnya
+  DEFAULT_USERS.forEach(defaultUser => {
+    if (!users.value.find(u => u.email === defaultUser.email)) {
+      users.value.push(defaultUser)
+    }
+  })
+
   const jalur = ref<Jalur[]>(load('jalur', DEFAULT_JALUR))
   const bookings = ref<Booking[]>(load('bookings', []))
   const pembayaran = ref<Pembayaran[]>(load('pembayaran', []))
@@ -213,7 +221,8 @@ export const useDatabaseStore = defineStore('database', () => {
 
   // Auth Operations
   const login = (email: string, passwordHash: string): boolean => {
-    const user = users.value.find(u => u.email === email && u.password_hash === passwordHash)
+    const cleanEmail = email.trim()
+    const user = users.value.find(u => u.email === cleanEmail && u.password_hash === passwordHash)
     if (user) {
       currentUser.value = user
       saveAll()
