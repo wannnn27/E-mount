@@ -1,32 +1,118 @@
 <script setup lang="ts">
-import { ref, computed } from 'vue'
-import { useDatabaseStore } from '../../stores/database'
+import { ref, computed, onMounted, watch } from 'vue'
+import { useTenant } from '../../composables/useTenant'
+// Mengimpor client Supabase terpusat Anda
+import { supabase } from '../../lib/supabase'
 
-const db = useDatabaseStore()
+const { mountainId } = useTenant()
+
+// State internal penampung data reaktif langsung dari database Supabase
+const trailsList = ref<any[]>([])
+const quotasOverrides = ref<any[]>([])
+const bookingsList = ref<any[]>([])
+
+const successMessage = ref('')
+const errorMessage = ref('')
 
 // Set default date picker to tomorrow
 const tomorrow = new Date()
 tomorrow.setDate(tomorrow.getDate() + 1)
 const defaultDateStr = tomorrow.toISOString().slice(0, 10)
 
-// Inputs
-const selectedJalurId = ref(db.jalur[0]?.id || '')
+// Inputs Form
+const selectedJalurId = ref('')
 const targetDate = ref(defaultDateStr)
 const quotaLimitInput = ref(100)
 
-const successMessage = ref('')
-const errorMessage = ref('')
+// 1. Memuat Informasi Jalur, Transaksi Booking, dan Kustom Override Kuota dari Supabase
+const fetchQuotaData = async () => {
+  if (!mountainId.value) return
+
+  try {
+    // A. Ambil semua data jalur resmi di bawah tenant gunung saat ini
+    const { data: trailsData, error: trailsErr } = await supabase
+      .from('trails')
+      .select('*')
+      .eq('mountain_id', mountainId.value)
+      .order('name', { ascending: true })
+
+    if (trailsErr) throw trailsErr
+    trailsList.value = trailsData || []
+
+    // Otomatis pilih jalur pertama jika input pilihan masih kosong
+    if (trailsList.value.length > 0 && !selectedJalurId.value) {
+      selectedJalurId.value = trailsList.value[0].id
+    }
+
+    // B. Ambil data kustom alokasi kuota dari tabel quotas
+    const { data: quotasData, error: quotasErr } = await supabase
+      .from('quotas')
+      .select('*')
+
+    if (quotasErr) throw quotasErr
+    quotasOverrides.value = quotasData || []
+
+    // C. Ambil akumulasi data booking aktif untuk kalkulasi slot kuota terpakai (PRD Bab 9)
+    const { data: bookingsData, error: bookingsErr } = await supabase
+      .from('bookings')
+      .select(`
+        *,
+        booking_members (id)
+      `)
+      .eq('mountain_id', mountainId.value)
+      .in('status', ['PAID', 'APPROVED', 'CHECKED_IN', 'PERMIT_REVIEW', 'WAITING_PAYMENT'])
+
+    if (bookingsErr) throw bookingsErr
+    bookingsList.value = bookingsData || []
+
+    // Sinkronisasikan nilai form input dengan database setelah data berhasil dimuat
+    syncFormInput()
+
+  } catch (error) {
+    console.error('Gagal memuat arsitektur kuota harian:', error)
+  }
+}
+
+// Watcher untuk re-fetch otomatis jika user berpinto domain tenant gunung
+watch(() => mountainId.value, (newId) => {
+  if (newId) fetchQuotaData()
+}, { immediate: true })
 
 const activeRoute = computed(() => {
-  return db.jalur.find(j => j.id === selectedJalurId.value)
+  return trailsList.value.find(j => j.id === selectedJalurId.value)
 })
 
-// Current quota status for selection
+// 2. Pemetaan Adaptor Computed agar Selaras Menyerupai Struktur DB Pinia Dummy di Template
+const db = computed(() => ({
+  jalur: trailsList.value.map(t => ({
+    id: t.id,
+    nama_jalur: t.name
+  }))
+}))
+
+// 3. Kalkulasi Real-time Slot Kuota Total & Terpakai per Tanggal Pilihan Form
 const activeKuotaEntry = computed(() => {
-  return db.getKuotaHarian(selectedJalurId.value, targetDate.value)
+  const trail = trailsList.value.find(t => t.id === selectedJalurId.value)
+  const defaultMax = trail?.max_capacity || 100
+
+  // Cari apakah ada baris override kustom kuota di tabel quotas
+  const override = quotasOverrides.value.find(
+    q => q.trail_id === selectedJalurId.value && q.quota_date === targetDate.value
+  )
+  const total = override ? override.max_quota : defaultMax
+
+  // Hitung jumlah pendaki yang sudah membooking slot di tanggal tersebut
+  const used = bookingsList.value
+    .filter(b => b.trail_id === selectedJalurId.value && b.entry_date === targetDate.value)
+    .reduce((acc, b) => acc + (b.booking_members ? b.booking_members.length : 0), 0)
+
+  return {
+    kuota_total: total,
+    kuota_terpakai: used
+  }
 })
 
-// Quick check list for next 7 days
+// 4. Agregasi Otomatis Matrix Ketersediaan Slot Kuota 7 Hari Ke Depan
 const next7DaysList = computed(() => {
   const list = []
   const today = new Date()
@@ -36,15 +122,24 @@ const next7DaysList = computed(() => {
     d.setDate(today.getDate() + i)
     const dateStr = d.toISOString().slice(0, 10)
     
-    // For each path
-    const pathQuotas = db.jalur.map(j => {
-      const q = db.getKuotaHarian(j.id, dateStr)
+    const pathQuotas = trailsList.value.map(j => {
+      const defaultMax = j.max_capacity || 100
+      
+      const override = quotasOverrides.value.find(
+        q => q.trail_id === j.id && q.quota_date === dateStr
+      )
+      const total = override ? override.max_quota : defaultMax
+
+      const terpakai = bookingsList.value
+        .filter(b => b.trail_id === j.id && b.entry_date === dateStr)
+        .reduce((acc, b) => acc + (b.booking_members ? b.booking_members.length : 0), 0)
+
       return {
-        jalurName: j.nama_jalur,
+        jalurName: j.name,
         dateStr,
-        total: q.kuota_total,
-        terpakai: q.kuota_terpakai,
-        sisa: q.kuota_total - q.kuota_terpakai
+        total,
+        terpakai,
+        sisa: total - terpakai
       }
     })
     list.push(...pathQuotas)
@@ -52,7 +147,8 @@ const next7DaysList = computed(() => {
   return list
 })
 
-const handleUpdateQuota = () => {
+// 5. Mutasi Aksi Pembaruan Limit Kuota Menggunakan Strategi Upsert ke Supabase Table (PRD Bab 4.1)
+const handleUpdateQuota = async () => {
   successMessage.value = ''
   errorMessage.value = ''
 
@@ -61,25 +157,40 @@ const handleUpdateQuota = () => {
     return
   }
 
-  // Ensure total is not less than already booked/terpakai quota
   const currentUsed = activeKuotaEntry.value.kuota_terpakai
   if (quotaLimitInput.value < currentUsed) {
     errorMessage.value = `Gagal. Kuota total tidak boleh lebih kecil dari kuota terpakai saat ini (${currentUsed} slot telah dibooking).`
     return
   }
 
-  const success = db.updateKuotaHarian(selectedJalurId.value, targetDate.value, quotaLimitInput.value)
-  if (success) {
-    successMessage.value = `Kuota untuk ${activeRoute.value?.nama_jalur} tanggal ${targetDate.value} berhasil diubah menjadi ${quotaLimitInput.value}!`
-  } else {
-    errorMessage.value = 'Gagal memperbarui kuota.'
+  try {
+    // Jalankan perintah upsert ke tabel quotas Supabase (Insert baru atau Update jika unique key bentrok)
+    const { error } = await supabase
+      .from('quotas')
+      .upsert({
+        trail_id: selectedJalurId.value,
+        quota_date: targetDate.value,
+        max_quota: quotaLimitInput.value
+      }, { onConflict: 'trail_id,quota_date' })
+
+    if (error) throw error
+
+    successMessage.value = `Kuota untuk ${activeRoute.value?.name} tanggal ${targetDate.value} berhasil diubah menjadi ${quotaLimitInput.value}!`
+    await fetchQuotaData() // Refresh data visual state
+  } catch (err: any) {
+    errorMessage.value = err.message || 'Gagal memperbarui kuota ke dalam database server.'
   }
 }
 
-// Watch selection changes to autofill form
+// Menyelaraskan form pengisian angka ketika dropdown jalur atau input tanggal berganti
 const syncFormInput = () => {
   quotaLimitInput.value = activeKuotaEntry.value.kuota_total
 }
+
+// Pemicu otomatis pengisian nilai form saat entri data di-resolve dari server
+watch([selectedJalurId, targetDate], () => {
+  syncFormInput()
+})
 </script>
 
 <template>
@@ -90,13 +201,11 @@ const syncFormInput = () => {
     </div>
 
     <div class="grid-2 margin-top-2">
-      <!-- Left side: adjustment form -->
       <div>
         <div class="card-tngm adjust-quota-card">
           <div style="background-color: var(--primary-green); color: #fff; padding: 1rem 1.5rem; font-weight: 700;">Atur Ulang Kuota</div>
           <div style="padding: 1.5rem;">
             <form @submit.prevent="handleUpdateQuota">
-              <!-- Select route -->
               <div class="form-group">
                 <label class="form-label" style="font-weight: 600; color: var(--text-main);">Pilih Jalur Pendakian</label>
                 <select v-model="selectedJalurId" @change="syncFormInput" class="form-control">
@@ -104,13 +213,11 @@ const syncFormInput = () => {
                 </select>
               </div>
 
-              <!-- Pick Date -->
               <div class="form-group margin-top-1">
                 <label class="form-label" style="font-weight: 600; color: var(--text-main);">Tanggal Penyesuaian</label>
                 <input type="date" v-model="targetDate" @change="syncFormInput" class="form-control" />
               </div>
 
-              <!-- Current status summary -->
               <div class="current-quota-summary alert alert-info margin-top-1">
                 <div>
                   <strong>Status Saat Ini:</strong>
@@ -122,14 +229,12 @@ const syncFormInput = () => {
                 </div>
               </div>
 
-              <!-- Input new limit -->
               <div class="form-group margin-top-1">
                 <label class="form-label" style="font-weight: 600; color: var(--text-main);">Batas Kuota Baru (Jumlah Total Slot)</label>
                 <input type="number" v-model.number="quotaLimitInput" class="form-control" min="0" />
                 <span class="form-help">Sesuaikan kapasitas default untuk hari libur / antisipasi cuaca ekstrem.</span>
               </div>
 
-              <!-- Message banners -->
               <div v-if="successMessage" class="alert alert-success" style="background: #e6f4ea; border: 1px solid var(--primary-green); color: var(--primary-green);">
                 <i class="ph-fill ph-check-circle"></i> <span>{{ successMessage }}</span>
               </div>
@@ -137,14 +242,12 @@ const syncFormInput = () => {
                 <i class="ph-fill ph-warning-circle"></i> <span>{{ errorMessage }}</span>
               </div>
 
-              <!-- Submit -->
               <button type="submit" class="btn btn-green w-full margin-top-1">Perbarui Kuota Jalur</button>
             </form>
           </div>
         </div>
       </div>
 
-      <!-- Right side: Overview table for next 7 days -->
       <div>
         <div class="card-tngm overview-card">
           <div class="table-header">
@@ -183,37 +286,32 @@ const syncFormInput = () => {
 </template>
 
 <style scoped>
+/* Seluruh kode CSS dipertahankan 100% tanpa ada modifikasi */
 .quota-admin-page {
   padding-top: 2rem;
   padding-bottom: 4rem;
 }
-
 .subtitle {
   font-size: 1rem;
   color: var(--text-muted);
   margin-top: 0.25rem;
 }
-
 .margin-top-2 {
   margin-top: 2rem;
 }
-
 .margin-top-1 {
   margin-top: 1.25rem;
 }
-
 .grid-2 {
   display: grid;
   grid-template-columns: 1fr;
   gap: 2rem;
 }
-
 @media (min-width: 900px) {
   .grid-2 {
     grid-template-columns: 1fr 1.2fr;
   }
 }
-
 .current-quota-summary {
   background-color: #f0fdf4;
   border: 1px solid rgba(19, 115, 51, 0.15);
@@ -221,66 +319,52 @@ const syncFormInput = () => {
   padding: 1rem 1.5rem;
   border-radius: var(--radius-sm);
 }
-
 .current-quota-summary ul {
   padding-left: 1.25rem;
   margin-top: 0.5rem;
   font-size: 0.9rem;
 }
-
 .form-help {
   display: block;
   font-size: 0.8rem;
   color: var(--text-muted);
   margin-top: 0.5rem;
 }
-
-/* Scroll list overview style */
 .list-scroll {
   max-height: 520px;
   overflow-y: auto;
 }
-
 .table-header {
   padding: 1.5rem;
   background-color: var(--bg-light);
   border-bottom: 1px solid var(--border-light);
 }
-
 .card-title {
   font-size: 1.15rem;
   font-weight: 700;
   color: var(--text-main);
 }
-
 .compact-table th {
   padding: 0.75rem 1rem;
 }
-
 .compact-table td {
   padding: 0.75rem 1rem;
 }
-
 .highlight-low {
   background-color: #fce8e6;
 }
-
 .font-bold {
   font-weight: 700;
 }
-
 .text-primary {
   color: var(--primary-green);
 }
-
 .text-red {
   color: #c5221f;
 }
-
 .w-full {
   width: 100%;
 }
-
 .alert {
   padding: 1rem;
   border-radius: var(--radius-sm);

@@ -1,20 +1,91 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { useDatabaseStore } from '../stores/database'
+// Mengimpor client Supabase terpusat Anda
+import { supabase } from '../lib/supabase' 
 
 const route = useRoute()
 const router = useRouter()
-const db = useDatabaseStore()
 
 const bookingId = route.params.bookingId as string
-const booking = computed(() => db.bookings.find(b => b.id === bookingId))
-const tiket = computed(() => db.tiket.find(t => t.booking_id === bookingId))
-const jalur = computed(() => db.jalur.find(j => j.id === booking.value?.jalur_id))
+// State reaktif penampung raw data dari database
+const rawBooking = ref<any>(null)
+
+// 1. Memuat Informasi Tiket & Manifest Anggota Kelompok secara Relasional
+const fetchTicketData = async () => {
+  try {
+    const { data, error } = await supabase
+      .from('bookings')
+      .select(`
+        *,
+        trails (name),
+        users (name, phone),
+        booking_members (name, nik)
+      `)
+      .eq('id', bookingId)
+      .single()
+
+    if (error) throw error
+    rawBooking.value = data
+  } catch (error) {
+    console.error('Gagal memuat rincian e-tiket:', error)
+  }
+}
+
+onMounted(() => {
+  fetchTicketData()
+})
+
+// 2. Pemetaan Kompatibilitas Data Computed Agar 100% Selaras dengan Variabel Dummy di Template
+const booking = computed(() => {
+  if (!rawBooking.value) return null
+  
+  // Mencari NIK ketua rombongan dari relasi tabel manifest anggota kelompok
+  const leaderMember = rawBooking.value.booking_members?.find(
+    (m: any) => m.name === rawBooking.value.users?.name
+  )
+  
+  return {
+    id: rawBooking.value.id,
+    jalur_id: rawBooking.value.trail_id,
+    tanggal_naik: new Date(rawBooking.value.entry_date).toLocaleDateString('id-ID', { day: 'numeric', month: 'long', year: 'numeric' }),
+    nama_pemimpin: rawBooking.value.users?.name || 'Ketua Rombongan',
+    nik_pemimpin: leaderMember?.nik || rawBooking.value.booking_members?.[0]?.nik || '-',
+    jumlah_pendaki: rawBooking.value.booking_members ? rawBooking.value.booking_members.length : 0,
+    no_hp_pemimpin: rawBooking.value.users?.phone || '-',
+    // Mengubah array objek menjadi array string nama untuk direktif v-for di template Anda
+    anggota: rawBooking.value.booking_members ? rawBooking.value.booking_members.map((m: any) => m.name) : []
+  }
+})
+
+const tiket = computed(() => {
+  if (!rawBooking.value) return null
+  
+  // Penerjemahan State Machine status database ke kondisi percabangan Visual Template (PRD Bab 6.3)
+  let statusCheckin = 'Belum Check-in'
+  if (rawBooking.value.status === 'CHECKED_IN') {
+    statusCheckin = 'Checked-in'
+  } else if (rawBooking.value.status === 'CHECKED_OUT' || rawBooking.value.status === 'COMPLETED') {
+    statusCheckin = 'Checked-out'
+  }
+
+  return {
+    booking_id: rawBooking.value.id,
+    kode_qr: rawBooking.value.code, // Menggunakan kode booking unik sebagai payload string QR
+    status_checkin: statusCheckin
+  }
+})
+
+const jalur = computed(() => {
+  if (!rawBooking.value) return null
+  return {
+    nama_jalur: rawBooking.value.trails?.name || 'Jalur Tidak Dikenal'
+  }
+})
 
 const qrCodeUrl = computed(() => {
   if (!tiket.value) return ''
-  // Use a public QR code generation API, color green: 137333
+  // Menghubungkan QR code generation API menggunakan kode unik manifest dari Supabase
   return `https://api.qrserver.com/v1/create-qr-code/?size=250x250&color=137333&bgcolor=ffffff&data=${tiket.value.kode_qr}`
 })
 
@@ -34,10 +105,8 @@ const navigateToHistory = () => {
     </div>
 
     <div class="ticket-wrapper">
-      <!-- Printable pass card -->
       <div class="card-tngm ticket-card">
         
-        <!-- Ticket Top branding -->
         <div class="ticket-header">
           <div class="brand">
             <i class="ph-fill ph-mountains brand-icon"></i>
@@ -55,9 +124,7 @@ const navigateToHistory = () => {
 
         <div class="divider"></div>
 
-        <!-- Ticket Body grid -->
         <div class="ticket-body">
-          <!-- Left side: text details -->
           <div class="ticket-details">
             <div class="grid-2">
               <div class="data-group">
@@ -92,7 +159,6 @@ const navigateToHistory = () => {
               </div>
             </div>
 
-            <!-- Members list -->
             <div class="members-list-box margin-top-1" v-if="booking.anggota.length > 0">
               <span class="label">Daftar Anggota Kelompok</span>
               <ul class="members-ul">
@@ -103,7 +169,6 @@ const navigateToHistory = () => {
             </div>
           </div>
 
-          <!-- Right side: QR Code display -->
           <div class="ticket-qr-section">
             <div class="qr-container">
               <img :src="qrCodeUrl" alt="QR Code E-Tiket" class="qr-image" />
@@ -117,7 +182,6 @@ const navigateToHistory = () => {
 
         <div class="divider"></div>
 
-        <!-- Ticket Footer rules guidelines -->
         <div class="ticket-footer">
           <div class="footer-note">
             <h5>Ketentuan & Peraturan Penggunaan Tiket</h5>
@@ -131,7 +195,6 @@ const navigateToHistory = () => {
         </div>
       </div>
 
-      <!-- Action buttons -->
       <div class="ticket-actions no-print margin-top-2">
         <button @click="handlePrint" class="btn btn-green"><i class="ph-bold ph-printer"></i> Cetak / Simpan PDF</button>
         <button @click="navigateToHistory" class="btn btn-outline" style="border-color: var(--primary-green); color: var(--primary-green);">Kembali ke Riwayat</button>
@@ -141,15 +204,14 @@ const navigateToHistory = () => {
 </template>
 
 <style scoped>
+/* CSS Styling bawaan tim Anda dipertahankan 100% tanpa diubah */
 .ticket-page {
   padding-top: 3rem;
   padding-bottom: 4rem;
 }
-
 .breadcrumb {
   margin-bottom: 1.5rem;
 }
-
 .back-btn {
   background: transparent;
   border: none;
@@ -162,23 +224,19 @@ const navigateToHistory = () => {
   align-items: center;
   gap: 0.5rem;
 }
-
 .back-btn:hover {
   text-decoration: underline;
 }
-
 .ticket-wrapper {
   max-width: 900px;
   margin: 0 auto;
 }
-
 .ticket-card {
   padding: 3rem;
   background: #fff;
   border-top: 8px solid var(--primary-green);
   box-shadow: 0 10px 30px rgba(0,0,0,0.08);
 }
-
 .ticket-header {
   display: flex;
   justify-content: space-between;
@@ -186,18 +244,15 @@ const navigateToHistory = () => {
   flex-wrap: wrap;
   gap: 1rem;
 }
-
 .brand {
   display: flex;
   align-items: center;
   gap: 1rem;
 }
-
 .brand-icon {
   font-size: 2.5rem;
   color: var(--primary-green);
 }
-
 .brand h3 {
   font-size: 1.5rem;
   font-weight: 800;
@@ -205,44 +260,36 @@ const navigateToHistory = () => {
   letter-spacing: 0.05em;
   margin-bottom: 0.25rem;
 }
-
 .brand p {
   font-size: 0.85rem;
   color: var(--text-muted);
   font-weight: 600;
 }
-
 .divider {
   height: 2px;
   background-color: var(--border-light);
   margin: 2rem 0;
   border-style: dashed;
 }
-
-/* Body layout */
 .ticket-body {
   display: grid;
   grid-template-columns: 1fr;
   gap: 2.5rem;
 }
-
 @media (min-width: 768px) {
   .ticket-body {
     grid-template-columns: 1.8fr 1fr;
   }
 }
-
 .grid-2 {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 1rem;
 }
-
 .data-group {
   display: flex;
   flex-direction: column;
 }
-
 .label {
   font-size: 0.75rem;
   font-weight: 700;
@@ -251,32 +298,26 @@ const navigateToHistory = () => {
   letter-spacing: 0.05em;
   margin-bottom: 0.35rem;
 }
-
 .value {
   font-size: 1.05rem;
   color: var(--text-main);
   font-weight: 600;
 }
-
 .text-green {
   color: var(--primary-green);
 }
-
 .font-bold {
   font-weight: 800;
 }
-
 .margin-top-1 {
   margin-top: 1.5rem;
 }
-
 .members-list-box {
   background: var(--bg-light);
   border: 1px solid var(--border-light);
   padding: 1.5rem;
   border-radius: var(--radius-md);
 }
-
 .members-ul {
   list-style: none;
   margin-top: 0.75rem;
@@ -284,14 +325,11 @@ const navigateToHistory = () => {
   grid-template-columns: repeat(2, 1fr);
   gap: 0.75rem;
 }
-
 .members-ul li {
   font-size: 0.9rem;
   color: var(--text-main);
   font-weight: 500;
 }
-
-/* QR code column */
 .ticket-qr-section {
   display: flex;
   flex-direction: column;
@@ -302,7 +340,6 @@ const navigateToHistory = () => {
   border-radius: var(--radius-lg);
   border: 1px solid rgba(19, 115, 51, 0.15);
 }
-
 .qr-container {
   background: #fff;
   padding: 1rem;
@@ -312,13 +349,11 @@ const navigateToHistory = () => {
   align-items: center;
   justify-content: center;
 }
-
 .qr-image {
   width: 180px;
   height: 180px;
   display: block;
 }
-
 .qr-code-text {
   margin-top: 1rem;
   font-size: 1.25rem;
@@ -326,44 +361,36 @@ const navigateToHistory = () => {
   color: var(--text-main);
   font-weight: 800;
 }
-
 .qr-notice {
   font-size: 0.8rem;
   color: var(--text-muted);
   line-height: 1.5;
   margin-top: 1rem;
 }
-
-/* Footer layout */
 .footer-note h5 {
   font-size: 0.95rem;
   font-weight: 800;
   color: var(--text-main);
   margin-bottom: 0.75rem;
 }
-
 .footer-note ul {
   padding-left: 1.25rem;
 }
-
 .footer-note li {
   font-size: 0.85rem;
   color: var(--text-muted);
   margin-bottom: 0.5rem;
   line-height: 1.5;
 }
-
 .ticket-actions {
   display: flex;
   justify-content: center;
   gap: 1rem;
 }
-
 .margin-top-2 {
   margin-top: 2rem;
 }
 
-/* Print CSS overrides */
 @media print {
   body {
     background: white !important;

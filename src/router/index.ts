@@ -1,5 +1,6 @@
 import { createRouter, createWebHistory } from 'vue-router'
-import { useDatabaseStore } from '../stores/database'
+// 1. Mengimpor client Supabase terpusat Anda
+import { supabase } from '../lib/supabase' 
 
 const router = createRouter({
   history: createWebHistory(import.meta.env.BASE_URL),
@@ -100,24 +101,46 @@ const router = createRouter({
   ]
 })
 
-// Authentication & Role Routing Guard
-router.beforeEach((to, from, next) => {
-  const db = useDatabaseStore()
-  const user = db.currentUser
+// 2. Mengubah Guard menjadi Async untuk membaca status session riil Supabase
+router.beforeEach(async (to, from, next) => {
+  // Ambil data user aktif dari Supabase token JWT lokal
+  const { data: { user } } = await supabase.auth.getUser()
 
+  // Skenario A: Halaman membutuhkan hak akses khusus Pengelola/Admin
   if (to.meta.requiresAdmin) {
-    if (!user || user.role !== 'admin') {
-      next({ name: 'login', query: { redirect: to.fullPath } })
-    } else {
-      next()
-    }
-  } else if (to.meta.requiresAuth) {
     if (!user) {
-      next({ name: 'login', query: { redirect: to.fullPath } })
-    } else {
-      next()
+      return next({ name: 'login', query: { redirect: to.fullPath } })
     }
-  } else {
+
+    // Mengambil profil role dinamis dari public.users (PRD Bab 2.2 & 6.1)
+    const { data: profile } = await supabase
+      .from('users')
+      .select('role')
+      .eq('id', user.id)
+      .maybeSingle()
+
+    const userRole = profile?.role || 'hiker'
+    const allowedAdminRoles = ['admin', 'tenant_admin', 'super_admin']
+
+    // Jika user terbukti bukan dari kelompok role admin, kembalikan ke riwayat pendaki
+    if (!allowedAdminRoles.includes(userRole)) {
+      return next({ name: 'riwayat' })
+    }
+    
+    return next()
+  } 
+  
+  // Skenario B: Halaman membutuhkan login pendaki biasa (Booking, Tiket, Riwayat)
+  else if (to.meta.requiresAuth) {
+    if (!user) {
+      // Tendang kembali ke login screen jika kedapatan belum melangsungkan auth session
+      return next({ name: 'login', query: { redirect: to.fullPath } })
+    }
+    return next()
+  } 
+  
+  // Skenario C: Halaman Publik (Landing, Cek Kuota)
+  else {
     next()
   }
 })
